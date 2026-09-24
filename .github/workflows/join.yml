@@ -1,0 +1,42 @@
+# THE JOIN-BRIDGE — self-serve org membership for students, no admin step.
+# A student's plugin opens an issue titled:  join <login> <class-code>
+# This workflow (holding the org-admin PAT as a secret) validates the class
+# code against cohorts/<code>.json, invites the author to the `students` team,
+# comments the outcome, and closes the issue. The plugin then ACCEPTS the
+# membership with the student's own token and creates their repo.
+name: join
+on:
+  issues:
+    types: [opened]
+permissions:
+  issues: write
+jobs:
+  join:
+    if: startsWith(github.event.issue.title, 'join ')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: process
+        env:
+          ADMIN_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          TITLE: ${{ github.event.issue.title }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -e
+          ORG="community-center-godot-path"
+          # title contract: join <login> <class-code> — and the author must BE the login
+          LOGIN=$(echo "$TITLE" | awk '{print $2}')
+          CODE=$(echo "$TITLE"  | awk '{print $3}' | tr -cd 'a-z0-9-')
+          fail() { gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" -b "$1"; gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY"; exit 0; }
+          [ "$LOGIN" = "$AUTHOR" ] || fail "❌ The request must come from the account it names."
+          [ -f "cohorts/$CODE.json" ] || fail "❌ Unknown class code."
+          RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d '{"role":"member"}' \
+            "https://api.github.com/orgs/$ORG/teams/students/memberships/$LOGIN")
+          [ "$RESP" = "200" ] || fail "❌ The invite failed (HTTP $RESP) — tell your mentor."
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" -b "✅ Invited **$LOGIN** to the students team (class $CODE). Your plugin finishes the rest."
+          gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY"
