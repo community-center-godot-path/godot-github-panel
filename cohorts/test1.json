@@ -1,0 +1,12 @@
+{
+  "mentor_teams": [
+    "mentors",
+    "instructors"
+  ],
+  "team_permissions": {
+    "mentors": "push",
+    "instructors": "maintain"
+  },
+  "min_plugin_version": "",
+  "message": "Welcome, testers! This is the test cohort."
+}
