@@ -8,5 +8,6 @@
     "instructors": "maintain"
   },
   "min_plugin_version": "9.9.9",
-  "message": "Harness cohort: forces the min-version lock."
+  "message": "Harness cohort: forces the min-version lock.",
+  "publishing_allowed": false
 }
