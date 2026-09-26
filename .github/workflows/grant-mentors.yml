@@ -52,22 +52,26 @@ jobs:
           done
           # THE REPORT the Starter's Staff section shows: read back from GitHub AFTER
           # granting (the truth, not the intent) — one notice annotation, JSON.
-          export ORG CODE_OK FAILS
-          REPORT=$(REPOS="$REPOS" TEAMS="$TEAMS" python3 -c "
-          import json, os, subprocess
-          def gh(path, jq):
-              r = subprocess.run(['gh', 'api', '--paginate', path, '--jq', jq], capture_output=True, text=True)
-              return [l for l in r.stdout.splitlines() if l]
-          org, code = os.environ['ORG'], os.environ['CODE_OK']
-          teams = []
-          for line in os.environ['TEAMS'].splitlines():
-              t, p = line.split()
-              teams.append({'team': t, 'access': p,
-                            'members': gh(f'orgs/{org}/teams/{t}/members', '.[].login')})
-          copies = []
-          for repo in os.environ['REPOS'].split():
-              got = dict(l.split(' ', 1) for l in gh(f'repos/{org}/{repo}/teams', '.[] | .slug + \" \" + .permission'))
-              copies.append({'repo': repo, 'student': repo[len(code) + 1:], 'teams': got})
+          # All GitHub reads happen HERE in bash; python only formats (testable offline).
+          {
+            while read -r TEAM PERM; do
+              echo "T $TEAM $PERM $(gh api --paginate "orgs/$ORG/teams/$TEAM/members" --jq '.[].login' | xargs)"
+            done <<< "$TEAMS"
+            for REPO in $REPOS; do
+              echo "C $REPO $(gh api "repos/$ORG/$REPO/teams" --jq '.[] | .slug + ":" + .permission' | xargs)"
+            done
+          } > grant_report.txt
+          REPORT=$(CODE_OK="$CODE_OK" FAILS="$FAILS" python3 -c "
+          import json, os
+          code = os.environ['CODE_OK']
+          teams, copies = [], []
+          for line in open('grant_report.txt'):
+              kind, name, *rest = line.split()
+              if kind == 'T':
+                  teams.append({'team': name, 'access': rest[0], 'members': rest[1:]})
+              else:
+                  copies.append({'repo': name, 'student': name[len(code) + 1:],
+                                 'teams': dict(x.split(':', 1) for x in rest)})
           print(json.dumps({'class': code, 'teams': teams, 'copies': copies,
                             'failed': int(os.environ['FAILS'])}, separators=(',', ':')))
           ")
