@@ -1,5 +1,5 @@
-# RESET STUDENT — staff button (Actions tab -> "Reset student" -> Run workflow).
-# Deletes ONE student's class copy <class_code>-<login> so they can press
+# RESET STUDENTS — staff button (Actions tab -> "Reset student" -> Run workflow).
+# Deletes each listed student's class copy <class_code>-<login> so they can press
 # "Get my game" again for a fresh start. Their org membership is kept, so the
 # new copy needs no join step. Deleted repos stay restorable by org owners for
 # 90 days (org Settings -> Deleted repositories).
@@ -8,14 +8,14 @@ name: Reset student
 on:
   workflow_dispatch:
     inputs:
-      login:
-        description: "Student's GitHub username"
+      logins:
+        description: "Students' GitHub usernames, separated by commas (e.g. ali, sara)"
         required: true
       class_code:
         description: "Class code (e.g. test1)"
         required: true
       confirm:
-        description: "Type the username again to confirm"
+        description: "Type the class code again to confirm"
         required: true
 permissions:
   contents: read
@@ -23,27 +23,38 @@ jobs:
   reset:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete the student's copy
+      - name: Delete the students' copies
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          LOGIN: ${{ inputs.login }}
+          LOGINS: ${{ inputs.logins }}
           CODE: ${{ inputs.class_code }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
           set -e
           ORG="community-center-godot-path"
           # inputs are untrusted text: allow only GitHub-legal characters
-          LOGIN_OK=$(printf '%s' "$LOGIN" | tr -cd 'A-Za-z0-9-')
           CODE_OK=$(printf '%s' "$CODE" | tr -cd 'a-z0-9-')
-          [ -n "$LOGIN_OK" ] && [ "$LOGIN_OK" = "$LOGIN" ] || { echo "::error::Invalid username"; exit 1; }
           [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
-          [ "$CONFIRM" = "$LOGIN" ] || { echo "::error::Confirmation does not match the username"; exit 1; }
-          REPO="$CODE_OK-$(printf '%s' "$LOGIN_OK" | tr 'A-Z' 'a-z')"
-          [ "$REPO" != "student-game-template" ] && [ "$REPO" != "godot-github-panel" ] || { echo "::error::Refused: infrastructure repo"; exit 1; }
-          if ! gh api "repos/$ORG/$REPO" --silent 2>/dev/null; then
-            echo "::error::No class copy named $REPO"; exit 1
-          fi
-          gh api -X DELETE "repos/$ORG/$REPO"
-          echo "### Reset done" >> "$GITHUB_STEP_SUMMARY"
-          echo "Deleted **$ORG/$REPO**. The student presses **Get my game** again for a fresh copy." >> "$GITHUB_STEP_SUMMARY"
+          [ "$CONFIRM" = "$CODE" ] || { echo "::error::Confirmation does not match the class code"; exit 1; }
+          echo "### Reset — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          FAILS=0
+          for LOGIN in $(printf '%s' "$LOGINS" | tr ',' ' '); do
+            LOGIN_OK=$(printf '%s' "$LOGIN" | tr -cd 'A-Za-z0-9-')
+            if [ -z "$LOGIN_OK" ] || [ "$LOGIN_OK" != "$LOGIN" ]; then
+              echo "- ❌ \`$LOGIN_OK\` — invalid username" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            REPO="$CODE_OK-$(printf '%s' "$LOGIN_OK" | tr 'A-Z' 'a-z')"
+            if [ "$REPO" = "student-game-template" ] || [ "$REPO" = "godot-github-panel" ]; then
+              echo "- ❌ $REPO — refused: infrastructure repo" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if ! gh api "repos/$ORG/$REPO" --silent 2>/dev/null; then
+              echo "- ❌ $REPO — no class copy with that name" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if gh api -X DELETE "repos/$ORG/$REPO" --silent; then
+              echo "- ✅ $REPO deleted — the student presses **Get my game** again" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- ❌ $REPO — delete failed" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+            fi
+          done
           echo "Undo within 90 days: org Settings -> Deleted repositories." >> "$GITHUB_STEP_SUMMARY"
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS student(s) not reset — see the summary"; exit 1; }

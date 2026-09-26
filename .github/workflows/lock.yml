@@ -1,0 +1,40 @@
+# THE LOCK-BRIDGE — the student's copy drops from ADMIN to MAINTAIN.
+# GitHub makes the creator of a copy its admin; an admin could delete it, change
+# its visibility or invite outsiders. Right after "Get my game" makes the copy,
+# the student's plugin opens an issue titled:  lock <login> <class-code>
+# This workflow (org-admin secret) checks the copy is theirs, sets them to
+# MAINTAIN (push + everything the panel needs, none of the above), comments, closes.
+name: lock
+on:
+  issues:
+    types: [opened]
+permissions:
+  issues: write
+jobs:
+  lock:
+    if: startsWith(github.event.issue.title, 'lock ')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: process
+        env:
+          TITLE: ${{ github.event.issue.title }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          set -e
+          ORG="community-center-godot-path"
+          LOGIN=$(echo "$TITLE" | awk '{print $2}' | tr -cd 'A-Za-z0-9-')
+          CODE=$(echo "$TITLE"  | awk '{print $3}' | tr -cd 'a-z0-9-')
+          done_() { gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" -b "$1"; gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY"; exit 0; }
+          [ "$LOGIN" = "$AUTHOR" ] || done_ "❌ The request must come from the account it names."
+          [ -f "cohorts/$CODE.json" ] || done_ "❌ Unknown class code."
+          REPO="$CODE-$(printf '%s' "$LOGIN" | tr 'A-Z' 'a-z')"
+          gh api "repos/$ORG/$REPO" --silent 2>/dev/null || done_ "❌ No class copy named $REPO."
+          ROLE=$(gh api "orgs/$ORG/memberships/$LOGIN" --jq .role 2>/dev/null || echo "")
+          [ "$ROLE" != "admin" ] || done_ "ℹ️ $LOGIN is an org owner — owners stay admin everywhere; nothing to lock."
+          gh api -X PUT "repos/$ORG/$REPO/collaborators/$LOGIN" -f permission=maintain --silent
+          NOW=$(gh api "repos/$ORG/$REPO/collaborators/$LOGIN/permission" --jq .role_name)
+          [ "$NOW" = "maintain" ] || done_ "❌ Could not lock $REPO (role is still $NOW) — tell your mentor."
+          done_ "✅ **$REPO** locked: $LOGIN is MAINTAIN (can push; cannot delete, change visibility or invite)."

@@ -1,0 +1,53 @@
+# GRANT MENTORS — staff button (Actions tab -> "Grant mentors" -> Run workflow).
+# Gives the class file's mentor teams access to EVERY copy of one class
+# (<class_code>-*). Teams + levels come from cohorts/<class_code>.json:
+# "mentor_teams" and optional "team_permissions" {team: pull|triage|push|maintain|admin}
+# (default push). Safe to press again — copies made since the last press are added.
+# People join a team on the website: org page -> Teams -> <team> -> Add a member.
+name: Grant mentors
+on:
+  workflow_dispatch:
+    inputs:
+      class_code:
+        description: "Class code (e.g. test1)"
+        required: true
+permissions:
+  contents: read
+jobs:
+  grant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Give the mentor teams access to the class copies
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          CODE: ${{ inputs.class_code }}
+        run: |
+          set -e
+          ORG="community-center-godot-path"
+          CODE_OK=$(printf '%s' "$CODE" | tr -cd 'a-z0-9-')
+          [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
+          [ -f "cohorts/$CODE_OK.json" ] || { echo "::error::Unknown class code"; exit 1; }
+          # one line per team: "<team> <permission>"
+          TEAMS=$(python3 -c "
+          import json
+          m = json.load(open('cohorts/$CODE_OK.json'))
+          p = m.get('team_permissions', {})
+          for t in m.get('mentor_teams', []):
+              print(t, p.get(t, 'push'))
+          ")
+          [ -n "$TEAMS" ] || { echo "::error::The class file names no mentor_teams"; exit 1; }
+          REPOS=$(gh api --paginate "orgs/$ORG/repos?type=all&per_page=100" --jq '.[].name' | grep "^$CODE_OK-" || true)
+          echo "### Grant mentors — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$REPOS" ] || { echo "No copies of class $CODE_OK yet — nothing to grant." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          FAILS=0
+          for REPO in $REPOS; do
+            while read -r TEAM PERM; do
+              if gh api -X PUT "orgs/$ORG/teams/$TEAM/repos/$ORG/$REPO" -f permission="$PERM" --silent; then
+                echo "- ✅ $TEAM ($PERM) → $REPO" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- ❌ $TEAM → $REPO failed" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+              fi
+            done <<< "$TEAMS"
+          done
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS grant(s) failed — see the summary"; exit 1; }

@@ -1,19 +1,19 @@
-# PUBLISH STUDENT — staff button (Actions tab -> "Publish student" -> Run workflow).
-# Makes ONE student's class copy public. Refused unless the class file
+# PUBLISH STUDENTS — staff button (Actions tab -> "Publish student" -> Run workflow).
+# Makes each listed student's class copy public. Refused unless the class file
 # cohorts/<class_code>.json says "publishing_allowed": true — so publishing is a
 # per-class staff decision (consent + art-license check), never a student click.
 name: Publish student
 on:
   workflow_dispatch:
     inputs:
-      login:
-        description: "Student's GitHub username"
+      logins:
+        description: "Students' GitHub usernames, separated by commas (e.g. ali, sara)"
         required: true
       class_code:
         description: "Class code (e.g. test1)"
         required: true
       confirm:
-        description: "Type the username again to confirm"
+        description: "Type the class code again to confirm"
         required: true
 permissions:
   contents: read
@@ -22,26 +22,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Make the student's copy public
+      - name: Make the students' copies public
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
-          LOGIN: ${{ inputs.login }}
+          LOGINS: ${{ inputs.logins }}
           CODE: ${{ inputs.class_code }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
           set -e
           ORG="community-center-godot-path"
-          LOGIN_OK=$(printf '%s' "$LOGIN" | tr -cd 'A-Za-z0-9-')
           CODE_OK=$(printf '%s' "$CODE" | tr -cd 'a-z0-9-')
-          [ -n "$LOGIN_OK" ] && [ "$LOGIN_OK" = "$LOGIN" ] || { echo "::error::Invalid username"; exit 1; }
           [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
-          [ "$CONFIRM" = "$LOGIN" ] || { echo "::error::Confirmation does not match the username"; exit 1; }
+          [ "$CONFIRM" = "$CODE" ] || { echo "::error::Confirmation does not match the class code"; exit 1; }
           [ -f "cohorts/$CODE_OK.json" ] || { echo "::error::Unknown class code"; exit 1; }
           ALLOWED=$(python3 -c "import json;print(json.load(open('cohorts/$CODE_OK.json')).get('publishing_allowed', False))")
           [ "$ALLOWED" = "True" ] || { echo "::error::Publishing is not allowed for class $CODE_OK (set publishing_allowed in its class file)"; exit 1; }
-          REPO="$CODE_OK-$(printf '%s' "$LOGIN_OK" | tr 'A-Z' 'a-z')"
-          [ "$REPO" != "student-game-template" ] && [ "$REPO" != "godot-github-panel" ] || { echo "::error::Refused: infrastructure repo"; exit 1; }
-          gh api "repos/$ORG/$REPO" --silent 2>/dev/null || { echo "::error::No class copy named $REPO"; exit 1; }
-          gh api -X PATCH "repos/$ORG/$REPO" -f visibility=public --silent
-          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
-          echo "**$ORG/$REPO** is now public: https://github.com/$ORG/$REPO" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Publish — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          FAILS=0
+          for LOGIN in $(printf '%s' "$LOGINS" | tr ',' ' '); do
+            LOGIN_OK=$(printf '%s' "$LOGIN" | tr -cd 'A-Za-z0-9-')
+            if [ -z "$LOGIN_OK" ] || [ "$LOGIN_OK" != "$LOGIN" ]; then
+              echo "- ❌ \`$LOGIN_OK\` — invalid username" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            REPO="$CODE_OK-$(printf '%s' "$LOGIN_OK" | tr 'A-Z' 'a-z')"
+            if [ "$REPO" = "student-game-template" ] || [ "$REPO" = "godot-github-panel" ]; then
+              echo "- ❌ $REPO — refused: infrastructure repo" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if ! gh api "repos/$ORG/$REPO" --silent 2>/dev/null; then
+              echo "- ❌ $REPO — no class copy with that name" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if gh api -X PATCH "repos/$ORG/$REPO" -f visibility=public --silent; then
+              echo "- ✅ https://github.com/$ORG/$REPO is now public" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- ❌ $REPO — could not make it public" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+            fi
+          done
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS student(s) not published — see the summary"; exit 1; }
