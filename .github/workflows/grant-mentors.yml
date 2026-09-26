@@ -39,7 +39,7 @@ jobs:
           [ -n "$TEAMS" ] || { echo "::error::The class file names no mentor_teams"; exit 1; }
           REPOS=$(gh api --paginate "orgs/$ORG/repos?type=all&per_page=100" --jq '.[].name' | grep "^$CODE_OK-" || true)
           echo "### Grant mentors — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
-          [ -n "$REPOS" ] || { echo "No copies of class $CODE_OK yet — nothing to grant." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          [ -n "$REPOS" ] || echo "No copies of class $CODE_OK yet — nothing to grant." >> "$GITHUB_STEP_SUMMARY"
           FAILS=0
           for REPO in $REPOS; do
             while read -r TEAM PERM; do
@@ -50,4 +50,28 @@ jobs:
               fi
             done <<< "$TEAMS"
           done
+          # THE REPORT the Starter's Staff section shows: read back from GitHub AFTER
+          # granting (the truth, not the intent) — one notice annotation, JSON.
+          export ORG CODE_OK FAILS
+          REPORT=$(REPOS="$REPOS" TEAMS="$TEAMS" python3 -c "
+          import json, os, subprocess
+          def gh(path, jq):
+              r = subprocess.run(['gh', 'api', '--paginate', path, '--jq', jq], capture_output=True, text=True)
+              return [l for l in r.stdout.splitlines() if l]
+          org, code = os.environ['ORG'], os.environ['CODE_OK']
+          teams = []
+          for line in os.environ['TEAMS'].splitlines():
+              t, p = line.split()
+              teams.append({'team': t, 'access': p,
+                            'members': gh(f'orgs/{org}/teams/{t}/members', '.[].login')})
+          copies = []
+          for repo in os.environ['REPOS'].split():
+              got = dict(l.split(' ', 1) for l in gh(f'repos/{org}/{repo}/teams', '.[] | .slug + \" \" + .permission'))
+              copies.append({'repo': repo, 'student': repo[len(code) + 1:], 'teams': got})
+          print(json.dumps({'class': code, 'teams': teams, 'copies': copies,
+                            'failed': int(os.environ['FAILS'])}, separators=(',', ':')))
+          ")
+          echo "\`\`\`json" >> "$GITHUB_STEP_SUMMARY"; echo "$REPORT" >> "$GITHUB_STEP_SUMMARY"; echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          ESC=$(printf '%s' "$REPORT" | sed -e 's/%/%25/g')
+          echo "::notice title=grant-report::$ESC"
           [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS grant(s) failed — see the summary"; exit 1; }
