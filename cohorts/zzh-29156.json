@@ -1,0 +1,13 @@
+{
+  "mentor_teams": [
+    "mentors",
+    "instructors"
+  ],
+  "message": "harness class",
+  "min_plugin_version": "",
+  "publishing_allowed": true,
+  "team_permissions": {
+    "instructors": "maintain",
+    "mentors": "push"
+  }
+}
