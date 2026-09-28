@@ -1,8 +1,9 @@
-# RESET STUDENTS — staff button (Actions tab -> "Reset student" -> Run workflow).
-# Deletes each listed student's class copy <class_code>-<login> so they can press
-# "Get my game" again for a fresh start. Their org membership is kept, so the
-# new copy needs no join step. Deleted repos stay restorable by org owners for
-# 90 days (org Settings -> Deleted repositories).
+# RESET STUDENTS — staff button (the Starter's Staff section -> Reset selected).
+# SETS ASIDE each listed student's class copy <class_code>-<login>: it is renamed
+# <class_code>-<login>-reset-<YYYYMMDD-HHMMSS> (UTC) and the student loses access,
+# so "Get my game" makes them a fresh copy. Nothing is deleted: staff can Undo
+# (undo-reset.yml) or Delete for good (delete-reset.yml) from the Staff section.
+# Their org membership is kept, so the new copy needs no join step.
 # Who can press it: people with write access to THIS repo (org owners by default).
 name: Reset student
 on:
@@ -23,7 +24,7 @@ jobs:
   reset:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete the students' copies
+      - name: Set the students' copies aside
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
           LOGINS: ${{ inputs.logins }}
@@ -37,6 +38,7 @@ jobs:
           [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
           [ "$CONFIRM" = "$CODE" ] || { echo "::error::Confirmation does not match the class code"; exit 1; }
           echo "### Reset — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          STAMP=$(date -u +%Y%m%d-%H%M%S)
           FAILS=0
           for LOGIN in $(printf '%s' "$LOGINS" | tr ',' ' '); do
             LOGIN_OK=$(printf '%s' "$LOGIN" | tr -cd 'A-Za-z0-9-')
@@ -47,14 +49,27 @@ jobs:
             if [ "$REPO" = "student-game-template" ] || [ "$REPO" = "godot-github-panel" ]; then
               echo "- ❌ $REPO — refused: infrastructure repo" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
             fi
-            if ! gh api "repos/$ORG/$REPO" --silent 2>/dev/null; then
+            # A renamed (already set-aside) copy still ANSWERS under its old name
+            # (GitHub redirects) — only a copy that really carries the name counts.
+            NAME=$(gh api "repos/$ORG/$REPO" --jq .name 2>/dev/null || true)
+            if [ "$NAME" != "$REPO" ]; then
               echo "- ❌ $REPO — no class copy with that name" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
             fi
-            if gh api -X DELETE "repos/$ORG/$REPO" --silent; then
-              echo "- ✅ $REPO deleted — the student presses **Get my game** again" >> "$GITHUB_STEP_SUMMARY"
+            ASIDE="$REPO-reset-$STAMP"
+            if ! gh api -X PATCH "repos/$ORG/$REPO" -f name="$ASIDE" --silent; then
+              echo "- ❌ $REPO — could not set it aside" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            # the student loses access to the old copy (staff teams keep theirs);
+            # org owners are left alone (as the lock does); no direct access = nothing to remove
+            DONE="- ✅ $REPO set aside as $ASIDE — the student presses **Get my game** for a fresh copy"
+            if [ "$(gh api "orgs/$ORG/memberships/$LOGIN_OK" --jq .role 2>/dev/null || true)" = "admin" ]; then
+              echo "$DONE (org owner — access unchanged)" >> "$GITHUB_STEP_SUMMARY"
+            elif ! gh api "repos/$ORG/$ASIDE/collaborators/$LOGIN_OK" --silent 2>/dev/null; then
+              echo "$DONE" >> "$GITHUB_STEP_SUMMARY"
+            elif gh api -X DELETE "repos/$ORG/$ASIDE/collaborators/$LOGIN_OK" --silent; then
+              echo "$DONE" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "- ❌ $REPO — delete failed" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+              echo "- ❌ $ASIDE set aside, but the student still has access to it" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
             fi
           done
-          echo "Undo within 90 days: org Settings -> Deleted repositories." >> "$GITHUB_STEP_SUMMARY"
           [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS student(s) not reset — see the summary"; exit 1; }

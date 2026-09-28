@@ -1,0 +1,53 @@
+# DELETE SET-ASIDE COPIES — staff button (Starter's Staff section -> Set-aside copies
+# -> Delete for good). Deletes ONLY copies that Reset set aside
+# (<class_code>-<login>-reset-<stamp>); an active student copy can never match.
+# GitHub keeps deleted repos restorable by org owners for 90 days
+# (org Settings -> Deleted repositories).
+# Who can press it: people with write access to THIS repo (org owners by default).
+name: Delete set-aside copies
+on:
+  workflow_dispatch:
+    inputs:
+      copies:
+        description: "Set-aside copies, separated by commas (e.g. test1-ali-reset-20260927-165930)"
+        required: true
+      class_code:
+        description: "Class code (e.g. test1)"
+        required: true
+      confirm:
+        description: "Type the class code again to confirm"
+        required: true
+permissions:
+  contents: read
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the set-aside copies
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          COPIES: ${{ inputs.copies }}
+          CODE: ${{ inputs.class_code }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -e
+          ORG="community-center-godot-path"
+          CODE_OK=$(printf '%s' "$CODE" | tr -cd 'a-z0-9-')
+          [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
+          [ "$CONFIRM" = "$CODE" ] || { echo "::error::Confirmation does not match the class code"; exit 1; }
+          echo "### Delete set-aside copies — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          FAILS=0
+          for ASIDE in $(printf '%s' "$COPIES" | tr ',' ' '); do
+            if ! printf '%s' "$ASIDE" | grep -Eq "^$CODE_OK-[a-z0-9-]+-reset-[0-9]{8}-[0-9]{6}$"; then
+              echo "- ❌ \`$(printf '%s' "$ASIDE" | tr -cd 'a-z0-9-')\` — refused: not a set-aside copy of class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if [ "$(gh api "repos/$ORG/$ASIDE" --jq .name 2>/dev/null || true)" != "$ASIDE" ]; then
+              echo "- ❌ $ASIDE — no such set-aside copy" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            if gh api -X DELETE "repos/$ORG/$ASIDE" --silent; then
+              echo "- ✅ $ASIDE deleted" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- ❌ $ASIDE — delete failed" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+            fi
+          done
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS copy/copies not deleted — see the summary"; exit 1; }

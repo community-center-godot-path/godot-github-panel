@@ -37,7 +37,9 @@ jobs:
               print(t, p.get(t, 'push'))
           ")
           [ -n "$TEAMS" ] || { echo "::error::The class file names no mentor_teams"; exit 1; }
-          REPOS=$(gh api --paginate "orgs/$ORG/repos?type=all&per_page=100" --jq '.[].name' | grep "^$CODE_OK-" || true)
+          # active copies only: Reset's set-aside copies (<copy>-reset-<stamp>) are not students
+          REPOS=$(gh api --paginate "orgs/$ORG/repos?type=all&per_page=100" --jq '.[].name' | grep "^$CODE_OK-" \
+            | grep -Ev -- '-reset-[0-9]{8}-[0-9]{6}$' || true)
           echo "### Grant mentors — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
           [ -n "$REPOS" ] || echo "No copies of class $CODE_OK yet — nothing to grant." >> "$GITHUB_STEP_SUMMARY"
           FAILS=0

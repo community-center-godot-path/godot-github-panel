@@ -1,0 +1,73 @@
+# UNDO RESET — staff button (the Starter's Staff section -> Set-aside copies -> Undo).
+# Brings a set-aside copy <class_code>-<login>-reset-<stamp> back under its old
+# name and gives the student their access back. If the student already made a
+# FRESH copy, that one is set aside in its turn (a SWAP) — nothing is ever lost.
+# Who can press it: people with write access to THIS repo (org owners by default).
+name: Undo reset
+on:
+  workflow_dispatch:
+    inputs:
+      copies:
+        description: "Set-aside copies, separated by commas (e.g. test1-ali-reset-20260927-165930)"
+        required: true
+      class_code:
+        description: "Class code (e.g. test1)"
+        required: true
+      confirm:
+        description: "Type the class code again to confirm"
+        required: true
+permissions:
+  contents: read
+jobs:
+  undo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bring the set-aside copies back
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          COPIES: ${{ inputs.copies }}
+          CODE: ${{ inputs.class_code }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -e
+          ORG="community-center-godot-path"
+          CODE_OK=$(printf '%s' "$CODE" | tr -cd 'a-z0-9-')
+          [ -n "$CODE_OK" ] && [ "$CODE_OK" = "$CODE" ] || { echo "::error::Invalid class code"; exit 1; }
+          [ "$CONFIRM" = "$CODE" ] || { echo "::error::Confirmation does not match the class code"; exit 1; }
+          echo "### Undo reset — class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"
+          STAMP=$(date -u +%Y%m%d-%H%M%S)
+          FAILS=0
+          for ASIDE in $(printf '%s' "$COPIES" | tr ',' ' '); do
+            if ! printf '%s' "$ASIDE" | grep -Eq "^$CODE_OK-[a-z0-9-]+-reset-[0-9]{8}-[0-9]{6}$"; then
+              echo "- ❌ \`$(printf '%s' "$ASIDE" | tr -cd 'a-z0-9-')\` — not a set-aside copy of class $CODE_OK" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            ORIG="${ASIDE%-reset-*}"
+            LOGIN="${ORIG#"$CODE_OK-"}"
+            if [ "$(gh api "repos/$ORG/$ASIDE" --jq .name 2>/dev/null || true)" != "$ASIDE" ]; then
+              echo "- ❌ $ASIDE — no such set-aside copy" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            # A FRESH copy under the old name? Swap: it is set aside in its turn.
+            if [ "$(gh api "repos/$ORG/$ORIG" --jq .name 2>/dev/null || true)" = "$ORIG" ]; then
+              if ! gh api -X PATCH "repos/$ORG/$ORIG" -f name="$ORIG-reset-$STAMP" --silent; then
+                echo "- ❌ $ORIG — could not set the fresh copy aside, nothing changed" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+              fi
+              if [ "$(gh api "orgs/$ORG/memberships/$LOGIN" --jq .role 2>/dev/null || true)" != "admin" ]; then
+                gh api -X DELETE "repos/$ORG/$ORIG-reset-$STAMP/collaborators/$LOGIN" --silent 2>/dev/null || true
+              fi
+              echo "- ↔ the fresh copy was set aside as $ORIG-reset-$STAMP" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if ! gh api -X PATCH "repos/$ORG/$ASIDE" -f name="$ORIG" --silent; then
+              echo "- ❌ $ASIDE — could not bring it back" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1)); continue
+            fi
+            DONE="- ✅ $ASIDE is $ORIG again — the student presses **Get my game** to get it"
+            if [ "$(gh api "orgs/$ORG/memberships/$LOGIN" --jq .role 2>/dev/null || true)" = "admin" ]; then
+              echo "$DONE (org owner — access unchanged)" >> "$GITHUB_STEP_SUMMARY"
+            elif ! gh api "users/$LOGIN" --silent 2>/dev/null; then
+              echo "$DONE — ⚠ no GitHub account named $LOGIN, so no access was given" >> "$GITHUB_STEP_SUMMARY"
+            elif gh api -X PUT "repos/$ORG/$ORIG/collaborators/$LOGIN" -f permission=maintain --silent; then
+              echo "$DONE" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- ❌ $ORIG is back, but the student's access could not be restored" >> "$GITHUB_STEP_SUMMARY"; FAILS=$((FAILS+1))
+            fi
+          done
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS copy/copies not brought back — see the summary"; exit 1; }
